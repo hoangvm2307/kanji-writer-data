@@ -3,9 +3,34 @@ import json
 import xml.etree.ElementTree as ET
 import re
 from svgpathtools import parse_path
+import numpy as np
 
-def extract_from_kanjivg(svg_file_path):
-    """Trích xuất thông tin từ file SVG của KanjiVG"""
+# Hệ số scale - điều chỉnh để phù hợp với kích thước của hanzi-writer-data
+# Dựa trên so sánh của bạn, có vẻ như cần khoảng 6-8 lần
+SCALE_FACTOR = 8.0
+
+def scale_path(path_data, scale_factor):
+    """Scale đường dẫn SVG lên theo hệ số scale_factor"""
+    try:
+        # Regex để tìm các số trong đường dẫn SVG
+        # Tìm các số có dấu thập phân hoặc không
+        numbers_pattern = r'(-?\d+\.?\d*)'
+        
+        def scale_number(match):
+            num = float(match.group(0))
+            scaled = num * scale_factor
+            # Làm tròn để tránh số thập phân quá dài
+            return str(round(scaled, 2))
+        
+        # Thay thế tất cả các số trong đường dẫn bằng phiên bản đã scale
+        scaled_path = re.sub(numbers_pattern, scale_number, path_data)
+        return scaled_path
+    except Exception as e:
+        print(f"Lỗi khi scale path: {e}")
+        return path_data
+
+def extract_from_kanjivg(svg_file_path, scale_factor=SCALE_FACTOR):
+    """Trích xuất thông tin từ file SVG của KanjiVG và scale lên"""
     
     # Đọc file SVG dưới dạng văn bản
     with open(svg_file_path, 'r', encoding='utf-8') as f:
@@ -61,11 +86,12 @@ def extract_from_kanjivg(svg_file_path):
     
     for i, path_data in enumerate(paths):
         if path_data:
-            # Thêm đường dẫn vào danh sách strokes
-            result["strokes"].append(path_data)
+            # Scale và thêm đường dẫn vào danh sách strokes
+            scaled_path = scale_path(path_data, scale_factor)
+            result["strokes"].append(scaled_path)
             
-            # Tạo các điểm trung tâm từ đường dẫn SVG
-            median_points = extract_median_points(path_data)
+            # Tạo các điểm trung tâm từ đường dẫn SVG (đã được scale)
+            median_points = extract_median_points(path_data, scale_factor)
             result["medians"].append(median_points)
     
     # Kiểm tra xem có radical information trong thẻ g hay không
@@ -78,10 +104,12 @@ def extract_from_kanjivg(svg_file_path):
             for path in radical_paths:
                 # Tìm index của path trong danh sách paths
                 d_attr = path.get('d')
-                if d_attr and d_attr in result["strokes"]:
-                    index = result["strokes"].index(d_attr)
-                    if index not in result["radStrokes"]:
-                        result["radStrokes"].append(index)
+                if d_attr:
+                    scaled_d_attr = scale_path(d_attr, scale_factor)
+                    if scaled_d_attr in result["strokes"]:
+                        index = result["strokes"].index(scaled_d_attr)
+                        if index not in result["radStrokes"]:
+                            result["radStrokes"].append(index)
     
     # Nếu vẫn không tìm thấy radical strokes, thử tìm theo thuộc tính type
     if len(result["radStrokes"]) == 0:
@@ -90,10 +118,12 @@ def extract_from_kanjivg(svg_file_path):
                 stroke_type = path.get('{%s}type' % ns)
                 if stroke_type and 'radical' in stroke_type.lower():
                     d_attr = path.get('d')
-                    if d_attr and d_attr in result["strokes"]:
-                        index = result["strokes"].index(d_attr)
-                        if index not in result["radStrokes"]:
-                            result["radStrokes"].append(index)
+                    if d_attr:
+                        scaled_d_attr = scale_path(d_attr, scale_factor)
+                        if scaled_d_attr in result["strokes"]:
+                            index = result["strokes"].index(scaled_d_attr)
+                            if index not in result["radStrokes"]:
+                                result["radStrokes"].append(index)
     
     # Debug: In ra số lượng strokes và radStrokes
     print(f"Số lượng strokes: {len(result['strokes'])}")
@@ -101,8 +131,8 @@ def extract_from_kanjivg(svg_file_path):
     
     return result
 
-def extract_median_points(path_data):
-    """Trích xuất các điểm trung tâm từ đường dẫn SVG"""
+def extract_median_points(path_data, scale_factor=SCALE_FACTOR):
+    """Trích xuất các điểm trung tâm từ đường dẫn SVG và scale lên"""
     
     try:
         # Phân tích đường dẫn SVG
@@ -120,7 +150,10 @@ def extract_median_points(path_data):
         for i in range(num_points):
             t = i / (num_points - 1)
             point = path.point(t)
-            median_points.append([int(point.real), int(point.imag)])
+            # Scale điểm và làm tròn
+            scaled_x = round(float(point.real) * scale_factor)
+            scaled_y = round(float(point.imag) * scale_factor)
+            median_points.append([scaled_x, scaled_y])
         
         # Đảm bảo có ít nhất 2 điểm
         if len(median_points) < 2:
@@ -131,7 +164,7 @@ def extract_median_points(path_data):
     except Exception as e:
         print(f"Lỗi khi xử lý đường dẫn SVG: {e}")
         # Trả về giá trị mặc định nếu có lỗi
-        return [[0, 0], [1, 1]]
+        return [[0, 0], [round(scale_factor)]]
 
 def convert_kanji_with_variants():
     """Chuyển đổi file SVG dựa theo file index, xử lý cả biến thể Kaisho"""
@@ -177,8 +210,8 @@ def convert_kanji_with_variants():
             svg_path = os.path.join(input_dir, standard_svg)
             if os.path.exists(svg_path):
                 try:
-                    # Trích xuất dữ liệu từ file SVG
-                    data = extract_from_kanjivg(svg_path)
+                    # Trích xuất dữ liệu từ file SVG với scale
+                    data = extract_from_kanjivg(svg_path, SCALE_FACTOR)
                     
                     # Kiểm tra xem có dữ liệu không
                     if len(data["strokes"]) == 0:
@@ -233,8 +266,8 @@ def convert_kanji_with_variants():
             svg_path = os.path.join(input_dir, standard_svg)
             if os.path.exists(svg_path):
                 try:
-                    # Trích xuất dữ liệu từ file SVG
-                    data = extract_from_kanjivg(svg_path)
+                    # Trích xuất dữ liệu từ file SVG với scale
+                    data = extract_from_kanjivg(svg_path, SCALE_FACTOR)
                     
                     # Kiểm tra xem có dữ liệu không
                     if len(data["strokes"]) == 0:
@@ -260,8 +293,8 @@ def convert_kanji_with_variants():
             svg_path = os.path.join(input_dir, kaisho_svg)
             if os.path.exists(svg_path):
                 try:
-                    # Trích xuất dữ liệu từ file SVG
-                    data = extract_from_kanjivg(svg_path)
+                    # Trích xuất dữ liệu từ file SVG với scale
+                    data = extract_from_kanjivg(svg_path, SCALE_FACTOR)
                     
                     # Kiểm tra xem có dữ liệu không
                     if len(data["strokes"]) == 0:
